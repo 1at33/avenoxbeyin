@@ -1155,9 +1155,10 @@ def parser(note_namespace=None, is_json=False):
     settings.add_argument("--auto-sync", choices=("on", "off"))
     settings.add_argument("--interval-minutes", type=int)
     settings.add_argument("--context-mode", choices=("turn", "session", "off"))
-    settings.add_argument("--context-chars", type=int)
+    settings.add_argument("--context-chars", type=int,
+                          help="Injected context limit, 1000..12000; Claude Code and Codex show at most 9500 of it")
     settings.add_argument("--companion-context-chars", type=int,
-                          help="Opening context budget (SessionStart, continuity questions), 1000..24000; 0 uses --context-chars")
+                          help="Opening context budget (SessionStart, continuity questions), 1000..24000; 0 uses --context-chars; Claude Code and Codex show at most 9500")
     # Context-fill reminder (issue #685): machine-local, opt-in, never in preferences file.
     settings.add_argument("--context-fill", choices=("on", "off"),
                           help="Opt-in reminder at Stop when context tokens exceed threshold; never a preferences key")
