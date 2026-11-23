@@ -1657,8 +1657,10 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         counts = {name: sum(item[2] == name for item in parts) for _, _, name in parts}
         lengths = [min(len(body), int(available * floors.get(name, 0) / counts[name]))
                    for _, body, name in parts]
+        core_fits = False
         if protect:
             minimum = [len(body) if name == 'Kurallar.md' else needs[i] for i, (_, body, name) in enumerate(parts)]
+            core_fits = sum(minimum) <= available  # the whole protected core, not a fallback split
             if sum(minimum) > available:
                 # The whole core does not fit. Identity, journal and other optional sources
                 # yield to a short head; the handoff keeps its newest card and at least its
@@ -1700,9 +1702,19 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                     gaps = [want - floor for want, floor in zip(preferred, minimum)]
                     lengths = [floor + gap * spare // sum(gaps) for floor, gap in zip(minimum, gaps)]
         spare = available - sum(lengths)
+        # Hybrid: where the whole protected core fits (rules whole, newest handoff card, topic
+        # overview), the topic detail beyond its floor fills at half rate while an identity file
+        # or the journal is still clipped; once those are whole it takes the rest as before.
+        # Identity comes before optional topic detail; the protected core and the Soul/Journal
+        # parity are untouched, so the #528 and #316 contracts hold.
+        slow = {i for i, item in enumerate(parts) if item[2] == 'Threads.md'} if protect and core_fits else set()
+        turn = 0
         while spare > 0 and any(lengths[i] < len(item[1]) for i, item in enumerate(parts)):
+            turn += 1
+            yielding = bool(slow) and turn % 2 == 0 and any(
+                lengths[j] < len(parts[j][1]) for j in range(len(parts)) if j not in slow)
             for i, (_, body, _) in enumerate(parts):
-                if spare > 0 and lengths[i] < len(body):
+                if spare > 0 and lengths[i] < len(body) and not (yielding and i in slow):
                     lengths[i] += 1
                     spare -= 1
         return lengths
