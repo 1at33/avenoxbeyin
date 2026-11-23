@@ -182,9 +182,14 @@ def record_error(state, exc):
         pass
 
 
-def output_context(harness, event, text):
+def output_context(harness, event, text, user_message=""):
     # OpenCode's vault plugin parses the Claude/Codex shape, so one parser serves three clients.
-    return {"injectSteps": [{"ephemeralMessage": text}]} if harness == "antigravity" else {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    if harness == "antigravity":
+        return {"injectSteps": [{"ephemeralMessage": text}]}
+    output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    if user_message and harness == "claude" and event == "SessionStart":
+        output["systemMessage"] = "Beyin: " + user_message  # Claude Code shows it to the person, not the model
+    return output
 
 
 def prompt_text(payload):
@@ -982,6 +987,7 @@ def main():
             # Both budgets stop below a client's own cut-off; past it the client files the text away (#175).
             # A text over the client's own measure is rendered once more with a scaled budget.
             limit = client_budget(args.harness, settings['context_chars'])
+            cut_notices = {}  # rendered opening -> the line naming what it cut to fit
             receipt = receipt_context(vault, state)
             usage_records = []
 
@@ -1020,6 +1026,7 @@ def main():
                     rendered = companion_context(store, max(0, budget - len(notice)), session, args.harness,
                                                  query, receipt, warning, project=project, report=report,
                                                  rules_project=rules_project)
+                    cut_notices[rendered] = report.get('cut', '')
                     return rendered, report.get('related_records', [])
 
                 text, usage_records = render_opening(limit)
@@ -1133,7 +1140,7 @@ def main():
             shown = fit_client(args.harness, (notice + text)[:limit])
             record_usage(usage_records if shown == notice + text else [])
             remember_notice(shown)
-            output = output_context(args.harness, event, shown)
+            output = output_context(args.harness, event, shown, cut_notices.get(text, ""))
             print(json.dumps(output))
         else:
             print(json.dumps(reminder) if reminder else (json.dumps(output_context(args.harness, event, notice)) if notice else ('{"decision":"stop"}' if args.harness == "antigravity" else "{}")))

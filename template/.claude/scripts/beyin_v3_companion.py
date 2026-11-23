@@ -1731,15 +1731,18 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                         parts = parts[:i] + [(label, view, name)] + parts[i + 1:]
                         lengths = share(available, parts, protect=True)
         h = header if header_text is None else header_text
-        rendered, rules = h + notice, None
+        rendered, rules, cuts = h + notice, None, []
         for i, (label, body, name) in enumerate(parts):
+            if lengths[i] < len(sections[i][1]) and name != 'Kisi.md':
+                shown = label.strip()[1:-1] if i >= len(records) else name
+                cuts.append(f'{shown} (dropped)' if lengths[i] < MIN_SHOWN else f'{shown} ({lengths[i]}/{len(sections[i][1])} chars)')
             if name == 'Kurallar.md' and i < len(records):  # project rule files come after the records
                 rules = {'chars': len(sections[i][1]), 'share': lengths[i], 'clipped': lengths[i] < len(body),
                          'reasons_omitted': body != sections[i][1]}
             rendered += label + (thread_view(body, lengths[i], brief) if name == 'Threads.md' else
                                  clip(body, lengths[i], both=name == 'Kurallar.md',
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
-        return rendered, rules
+        return rendered, rules, cuts
 
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
@@ -1752,7 +1755,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         core_size = budget
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
     companion_clipped = needed > available
-    text, rules = companion(available)
+    text, rules, cuts = companion(available)
     extra = ''
     related_records = []
     index = knowledge_map(store)
@@ -1825,9 +1828,9 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         extra += clip(receipt, budget - len(text) - len(extra))
     # Retrieval takes its share first; every character it did not use goes back to the
     # clipped companion sources instead of being dropped.
-    regained, regained_rules = companion(budget - fixed - len(extra))
+    regained, regained_rules, regained_cuts = companion(budget - fixed - len(extra))
     if len(text) < len(regained) <= budget - len(extra):
-        text, rules = regained, regained_rules
+        text, rules, cuts = regained, regained_rules, regained_cuts
     if rules and rules.get('clipped'):
         # Reserve the longest possible numeric share before allocating. Reclaiming
         # its spare digits can oscillate (999 -> 1000 -> 999), so keep this small
@@ -1850,16 +1853,37 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if new_fixed + len(extra) > budget:
             extra = ''
         allocation = budget - new_fixed - len(extra)
-        _, final_rules = companion(allocation, header_text=reserved_header)
+        _, final_rules, _ = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
-        text, final_rules = companion(allocation, header_text=full_header)
+        text, final_rules, cuts = companion(allocation, header_text=full_header)
         if report is not None and final_rules:
             report['Kurallar.md'] = final_rules
     elif report is not None and rules:
         report['Kurallar.md'] = rules
     if report is not None and extra:
         report['related_records'] = related_records
+    # The rules say so in the hygiene line; every other source cut to fit is named in a closing
+    # line. report['cut'] carries it to the hook even when the text has no room left for it
+    # (the companion sources keep their room: identity, rules and handoff are not squeezed).
+    named = [c for c in cuts if c.split(' (')[0].rsplit('/', 1)[-1] != 'Kurallar.md']
+    if named:
+        line = cut_line(named, target.relative_to(store.vault_root).as_posix())
+        if report is not None:
+            report['cut'] = line.strip()
+        if len(text) + len(extra) + len(line) <= budget:
+            extra += line
     return text + extra
+
+
+MIN_SHOWN = 60  # a section cut below this is dropped whole in the notice
+CUT_LINE = 300  # longest line naming what was cut
+
+
+def cut_line(cuts, where):
+    line = f'\nTruncated: {", ".join(cuts)}; read the full files in {where}.\n'
+    if len(line) > CUT_LINE:
+        line = f'\nTruncated: {len(cuts)} sections ({cuts[0].split(" (")[0]}, ...); read the full files in {where}.\n'
+    return line
 
 
 def rules_opening(store, budget, receipt=''):

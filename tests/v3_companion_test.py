@@ -105,6 +105,17 @@ class CompanionTest(unittest.TestCase):
         self.assertIn('truncated: read source', text)
         self.assertLessEqual(len(text), 2000)
 
+    def test_claude_session_start_tells_the_user_what_was_cut(self):
+        self.seed()
+        (self.vault / '.beyin-preferences.json').write_text(json.dumps({'context_chars': 2000, 'context_mode': 'session'}))
+        payload = dict(hook_event_name='SessionStart', session_id='synthetic-cut', event_id='SessionStart')
+        script = ROOT / 'template/.claude/scripts/beyin_v3_hook.py'
+        output = self.run_cli(script, '--vault', self.vault, '--state', self.state, '--harness', 'claude', payload=payload)
+        self.assertRegex(output['systemMessage'], r'^Beyin: Truncated: .*Core\.md')
+        self.assertLessEqual(len(output['hookSpecificOutput']['additionalContext']), 2000)
+        codex = self.run_cli(script, '--vault', self.vault, '--state', self.state, '--harness', 'codex', payload=payload)
+        self.assertNotIn('systemMessage', codex)
+
     def test_relational_question_restores_context_without_lexical_overlap(self):
         self.seed()
         for prompt in ('Beni tanıyor musun? Geçen sefer nerede kalmıştık?', 'What did we do last time?'):

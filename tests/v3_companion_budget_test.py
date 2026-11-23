@@ -337,5 +337,80 @@ class CompanionBudgetTest(unittest.TestCase):
                 self.assertIn('JOURNAL_CANARY', text)
 
 
+def filler(title, size, tag):
+    """Synthetic section body of about size characters whose last line is the tag's END marker."""
+    out, i = f'# {title}\n', 0
+    while len(out) < size:
+        out += f'- {tag}{i:03d}: bu satır sentetik içeriktir ve kısa cümlelerle yazılmıştır.\n'
+        i += 1
+    return out + f'- {tag}_END\n'
+
+
+class CompanionCutNoticeTest(unittest.TestCase):
+    """What the opening cuts to fit is named in a closing line, never silent."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='companion-priority-')
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.vault = root / 'vault'
+        (self.vault / COMPANION).mkdir(parents=True)
+        (self.vault / 'projects' / 'demo').mkdir(parents=True)
+        self.store = evaluator.load_runtime().MemoryStore(root / 'runtime', self.vault)
+        self.addCleanup(lambda: evaluator.close_store(self.store))
+        threads = ''.join(f'### Thread: Konu {i}\n**Status:** active\n' + filler('T', 900, f'THR{i}_') for i in range(5))
+        bodies = {
+            f'{COMPANION}/Core.md': filler('Kimlik', 1650, 'CORE'),
+            f'{COMPANION}/Soul.md': filler('Üslup', 1140, 'SOUL'),
+            f'{COMPANION}/Kurallar.md': filler('Kurallar', 2800, 'GRULE'),
+            f'{COMPANION}/Last-Session.md': '# Son\n\n## 2026-10-01 10:00 · deneme · abcd1234\n' + filler('Devir', 1050, 'HAND'),
+            f'{COMPANION}/Threads.md': '# Threads\n\n## Active Threads\n' + threads,
+            f'{COMPANION}/Journal.md': '# Journal\n\n## 2026-10-01\n' + filler('J', 1500, 'JRN'),
+            'projects/demo/Kurallar.md': filler('Kurallar', 2250, 'PRULE'),
+        }
+        for source, body in bodies.items():
+            (self.vault / source).write_text(body, encoding='utf-8')
+            self.store.ingest({'id': source, 'kind': 'note', 'status': 'active', 'text': body,
+                               'source': source, 'updated_at': '2026-10-01T00:00:00Z'})
+
+    def context(self, budget):
+        return companion.context(self.store, budget, 'synthetic-priority', 'claude', rules_project='demo')
+
+    def test_output_stays_within_budget_and_client_cap_at_every_budget(self):
+        for budget in (2000, 5000, 7000, 9500):
+            with self.subTest(budget=budget):
+                text = self.context(budget)
+                self.assertLessEqual(len(text), budget)
+                self.assertLessEqual(companion.client_size('claude', text), companion.CLIENT_TEXT_LIMITS['claude'][0])
+
+    def test_every_section_cut_to_fit_is_named_for_the_user(self):
+        # The line reaches the hook through the report even when the text has no room for it.
+        for budget in (5000, 7000, 9500):
+            with self.subTest(budget=budget):
+                report = {}
+                text = companion.context(self.store, budget, 'synthetic-priority', 'claude', report=report,
+                                         rules_project='demo')
+                self.assertRegex(report['cut'], r'^Truncated: ')
+                self.assertIn('Threads.md', report['cut'])
+                self.assertIn('read the full files in ' + COMPANION, report['cut'])
+                self.assertLessEqual(len(text), budget)
+
+    def test_nothing_is_announced_when_everything_fits(self):
+        report = {}
+        text = companion.context(self.store, 20000, 'synthetic-priority', 'claude', report=report, rules_project='demo')
+        self.assertNotIn('cut', report)
+        self.assertNotIn('Truncated:', text)
+
+    def test_claude_session_start_shows_the_cut_line_to_the_user(self):
+        hook = load('beyin_v3_budget_hook', 'template/.claude/scripts/beyin_v3_hook.py')
+        line = 'Truncated: Threads.md (dropped); read the full files in x.'
+        shown = hook.output_context('claude', 'SessionStart', 'text', line)
+        self.assertEqual(shown['systemMessage'], 'Beyin: ' + line)
+        self.assertEqual(shown['hookSpecificOutput']['additionalContext'], 'text')
+        for harness, event in (('codex', 'SessionStart'), ('claude', 'UserPromptSubmit'), ('antigravity', 'SessionStart')):
+            self.assertNotIn('systemMessage', hook.output_context(harness, event, 'text', line))
+        self.assertNotIn('systemMessage', hook.output_context('claude', 'SessionStart', 'text'))
+
+
 if __name__ == '__main__':
     unittest.main()
