@@ -412,5 +412,64 @@ class CompanionCutNoticeTest(unittest.TestCase):
         self.assertNotIn('systemMessage', hook.output_context('claude', 'SessionStart', 'text'))
 
 
+class CompanionPointerReserveTest(unittest.TestCase):
+    """The named cut line reaches the model text, not only report['cut']; clipped rules win over it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='companion-pointer-')
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.vault = root / 'vault'
+        (self.vault / COMPANION).mkdir(parents=True)
+        self.store = evaluator.load_runtime().MemoryStore(root / 'runtime', self.vault)
+        self.addCleanup(lambda: evaluator.close_store(self.store))
+
+    def seed(self, rules_size):
+        threads = ''.join(f'### Thread: Konu {i}\n**Status:** active\n' + filler('T', 900, f'THR{i}_') for i in range(5))
+        bodies = {
+            f'{COMPANION}/Core.md': filler('Kimlik', 4000, 'CORE'),
+            f'{COMPANION}/Kurallar.md': filler('Kurallar', rules_size, 'GRULE'),
+            f'{COMPANION}/Last-Session.md': '# Son\n\n## 2026-10-01 10:00 · deneme · abcd1234\n' + filler('Devir', 3000, 'HAND'),
+            f'{COMPANION}/Threads.md': '# Threads\n\n## Active Threads\n' + threads,
+            f'{COMPANION}/Journal.md': '# Journal\n\n## 2026-10-01\n' + filler('J', 1500, 'JRN'),
+        }
+        for source, body in bodies.items():
+            (self.vault / source).write_text(body, encoding='utf-8')
+            self.store.ingest({'id': source, 'kind': 'note', 'status': 'active', 'text': body,
+                               'source': source, 'updated_at': '2026-10-01T00:00:00Z'})
+
+    def test_named_pointer_is_in_the_model_text_with_whole_rules(self):
+        self.seed(600)
+        for harness in ('claude', 'codex'):
+            for budget in (3000, 5000, 7000, 9500):
+                with self.subTest(harness=harness, budget=budget):
+                    report = {}
+                    text = companion.context(self.store, budget, 'synthetic-pointer', harness, report=report)
+                    smaller = companion.client_rebudget(harness, budget, text)  # the hook's byte/UTF-16 retry
+                    if smaller:
+                        report = {}
+                        budget = smaller
+                        text = companion.context(self.store, budget, 'synthetic-pointer', harness, report=report)
+                    self.assertIn('Truncated: ', report['cut'])
+                    self.assertTrue(text.endswith(report['cut'] + '\n'), text[-200:])
+                    self.assertIn('read the full files in ' + COMPANION, text)
+                    self.assertIn('GRULE_END', text)  # the rules stayed whole
+                    self.assertLessEqual(len(text), budget)
+                    self.assertLessEqual(companion.client_size(harness, text), companion.CLIENT_TEXT_LIMITS[harness][0])
+
+    def test_clipped_rules_take_no_reserve(self):
+        self.seed(9000)
+        for budget in (3000, 5000):
+            with self.subTest(budget=budget):
+                report = {}
+                text = companion.context(self.store, budget, 'synthetic-pointer', 'claude', report=report)
+                self.assertTrue(report['Kurallar.md']['clipped'])
+                self.assertLessEqual(len(text), budget)
+                # Rules keep every character they had: the pointer only follows when room is left over.
+                if 'Truncated: ' in text:
+                    self.assertTrue(text.endswith(report['cut'] + '\n'))
+                self.assertIn('GRULE_END', text)
+
+
 if __name__ == '__main__':
     unittest.main()

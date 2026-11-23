@@ -1744,6 +1744,15 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                                       tail=name == 'Kurallar.md' or (name == 'Journal.md' and not re.search(r'(?m)^## ', body))))
         return rendered, rules, cuts
 
+    where = target.relative_to(store.vault_root).as_posix()
+
+    def pointer_reserve(found):
+        # The closing pointer line must reach the model: room is reserved for it before the
+        # companion sources share the rest (prototype B).
+        if any(c.split(' (')[0].rsplit('/', 1)[-1] == 'Kurallar.md' for c in found):
+            return 0  # clipped rules keep every character: their own notice already points to the file
+        named_now = [c for c in found if c.split(' (')[0].rsplit('/', 1)[-1] != 'Kurallar.md']
+        return len(cut_line(named_now, where)) + 20 if named_now else 0
     needed = sum(len(body) for _, body, _ in sections)
     # Reserve the protected core before maps, receipts or retrieval. If even this core
     # cannot fit, bounded fair shares and explicit omission markers still apply; no
@@ -1756,13 +1765,21 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     available = max(0, max(int(budget * .83), core_size if core_size <= budget else 0) - fixed)
     companion_clipped = needed > available
     text, rules, cuts = companion(available)
+    for _ in range(3):
+        # A core that nearly fills the budget still leaves room for the pointer line.
+        overflow = len(text) + pointer_reserve(cuts) - budget
+        if overflow <= 0 or available <= overflow:
+            break
+        available -= overflow
+        text, rules, cuts = companion(available)
+    xb = budget - pointer_reserve(cuts)  # room for map, retrieval and receipt
     extra = ''
     related_records = []
     index = knowledge_map(store)
     shown_map = set()  # map sources retrieval must not repeat below
     if index:
         label = f'\n[Knowledge map: {index["source"]}]\n'
-        room = budget - len(text)
+        room = xb - len(text)
         allowance = min(600, room // 3)
         if not companion_clipped:
             # The map grows with spare room (#146), but not while companion sources are clipped:
@@ -1777,7 +1794,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
                 shown_map.update((index['source'], 'knowledge/index.md'))
             elif len(index['text']) <= allowance - len(label):
                 shown_map.add(index['source'])
-    remaining = budget - len(text) - len(extra)
+    remaining = xb - len(text) - len(extra)
     # At SessionStart without a query, an unqueried snapshot must never starve clipped companion
     # sources: an ambient note yields its budget so active threads and rules stay whole.
     retrieval_share = max(0, budget - int(budget * .83) - len(extra))
@@ -1815,7 +1832,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         if record['source'] in used:
             continue
         label = f'\n[Related source: {record["source"]}]\n'
-        room = min(budget - len(text) - len(extra) - len(label), retrieval_cap - retrieval_used - len(label))
+        room = min(xb - len(text) - len(extra) - len(label), retrieval_cap - retrieval_used - len(label))
         if room > 40:
             addition = label + clip(record['text'], room)
             extra += addition
@@ -1824,12 +1841,19 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     # The receipt comes with its whole header, which names the source and calls it a historical
     # claim (#147), plus some body; a narrower room goes back to the companion sources instead.
     receipt_head = receipt.find('):\n') + 3 if receipt else 0
-    if receipt and len(text) + len(extra) + receipt_head + 80 < budget:
-        extra += clip(receipt, budget - len(text) - len(extra))
+    if receipt and len(text) + len(extra) + receipt_head + 80 < xb:
+        extra += clip(receipt, xb - len(text) - len(extra))
     # Retrieval takes its share first; every character it did not use goes back to the
     # clipped companion sources instead of being dropped.
-    regained, regained_rules, regained_cuts = companion(budget - fixed - len(extra))
-    if len(text) < len(regained) <= budget - len(extra):
+    reserve = pointer_reserve(cuts)
+    for _ in range(3):
+        # More room can cut a different set of files: the reserve follows the final set.
+        regained, regained_rules, regained_cuts = companion(budget - fixed - len(extra) - reserve)
+        needed_reserve = pointer_reserve(regained_cuts)
+        if needed_reserve <= reserve:
+            break
+        reserve = needed_reserve
+    if len(text) < len(regained) <= budget - len(extra) - reserve:
         text, rules, cuts = regained, regained_rules, regained_cuts
     if rules and rules.get('clipped'):
         # Reserve the longest possible numeric share before allocating. Reclaiming
@@ -1852,7 +1876,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
         # clipping here could leave a receipt header without its meaningful body.
         if new_fixed + len(extra) > budget:
             extra = ''
-        allocation = budget - new_fixed - len(extra)
+        allocation = budget - new_fixed - len(extra) - pointer_reserve(cuts)
         _, final_rules, _ = companion(allocation, header_text=reserved_header)
         full_header = hygiene_line + hygiene_notice(None, rules=final_rules) + header_tail
         text, final_rules, cuts = companion(allocation, header_text=full_header)
@@ -1867,7 +1891,7 @@ def context(store, budget, session, harness, query='', receipt='', warning='', p
     # (the companion sources keep their room: identity, rules and handoff are not squeezed).
     named = [c for c in cuts if c.split(' (')[0].rsplit('/', 1)[-1] != 'Kurallar.md']
     if named:
-        line = cut_line(named, target.relative_to(store.vault_root).as_posix())
+        line = cut_line(named, where)
         if report is not None:
             report['cut'] = line.strip()
         if len(text) + len(extra) + len(line) <= budget:

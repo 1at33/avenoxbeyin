@@ -23,6 +23,7 @@ BUDGETS = (2000, 3000, 5000, 8000)
 
 
 def sections(text):
+    text = re.sub(r'\nTruncated: [^\n]*\n?$', '', text)  # the closing pointer line is not a source body
     parts = re.split(r'\n\[' + DIRECTORY + r'/([^\]\n]+)\]\n', text)
     return {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
 
